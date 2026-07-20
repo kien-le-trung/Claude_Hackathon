@@ -89,9 +89,10 @@ class OpenPoseModel:
         """
         os.makedirs(output_dir, exist_ok=True)
 
-        # URLs for COCO model
+        # URLs for COCO model - using alternative mirror
         proto_url = "https://raw.githubusercontent.com/CMU-Perceptual-Computing-Lab/openpose/master/models/pose/coco/pose_deploy_linevec.prototxt"
-        model_url = "http://posefs1.perception.cs.cmu.edu/OpenPose/models/pose/coco/pose_iter_440000.caffemodel"
+        # Alternative URL from SNU mirror
+        model_url = "http://vcl.snu.ac.kr/OpenPose/models/pose/coco/pose_iter_440000.caffemodel"
 
         proto_path = os.path.join(output_dir, "pose_deploy_linevec.prototxt")
         model_path = os.path.join(output_dir, "pose_iter_440000.caffemodel")
@@ -164,6 +165,21 @@ class OpenPoseModel:
                 points.append(None)
 
         return points, output
+
+    def get_body_part_name(self, index: int) -> str:
+        """
+        Get the name of a body part by its index.
+
+        Args:
+            index: Body part index
+
+        Returns:
+            Name of the body part
+        """
+        for name, idx in self.BODY_PARTS.items():
+            if idx == index:
+                return name
+        return f"Unknown_{index}"
 
     def draw_skeleton(self, image: np.ndarray, keypoints: List,
                      threshold: float = 0.1) -> np.ndarray:
