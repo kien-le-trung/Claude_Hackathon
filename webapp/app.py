@@ -7,7 +7,8 @@ Allows users to upload videos and get scored against the model squat.
 import os
 import sys
 import json
-from flask import Flask, render_template, request, jsonify, send_from_directory
+import mimetypes
+from flask import Flask, render_template, request, jsonify, send_file, Response
 from werkzeug.utils import secure_filename
 import cv2
 import numpy as np
@@ -312,6 +313,12 @@ def index():
     return render_template('index.html')
 
 
+@app.route('/test-videos')
+def test_videos():
+    """Test page for video loading."""
+    return render_template('test_videos.html')
+
+
 @app.route('/api/upload', methods=['POST'])
 def upload_video():
     """Handle video upload and analysis."""
@@ -423,6 +430,74 @@ def status():
         'ready': model_exists,
         'model_path': model_path
     })
+
+
+@app.route('/api/video/<filename>')
+def serve_video(filename):
+    """Serve video files from the output directory with range request support."""
+    # Sanitize filename to prevent path traversal
+    filename = secure_filename(filename)
+
+    # Get absolute path to parent directory
+    parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    output_dir = os.path.join(parent_dir, 'output')
+    video_path = os.path.join(output_dir, filename)
+
+    # Verify the path is within output directory (prevent path traversal)
+    if not os.path.abspath(video_path).startswith(os.path.abspath(output_dir)):
+        return jsonify({'error': 'Invalid file path'}), 403
+
+    # Check if file exists
+    if not os.path.exists(video_path):
+        return jsonify({'error': 'Video not found', 'path': filename}), 404
+
+    # Determine mimetype
+    mimetype = mimetypes.guess_type(filename)[0] or 'video/mp4'
+
+    # Get file size
+    file_size = os.path.getsize(video_path)
+
+    # Check for range request
+    range_header = request.headers.get('Range', None)
+
+    if range_header:
+        # Parse range header
+        byte_start = 0
+        byte_end = file_size - 1
+
+        range_match = range_header.replace('bytes=', '').split('-')
+        if range_match[0]:
+            byte_start = int(range_match[0])
+        if range_match[1]:
+            byte_end = int(range_match[1])
+
+        # Read the requested range
+        with open(video_path, 'rb') as f:
+            f.seek(byte_start)
+            data = f.read(byte_end - byte_start + 1)
+
+        # Create response with partial content
+        response = Response(
+            data,
+            206,  # Partial Content
+            mimetype=mimetype,
+            direct_passthrough=True
+        )
+        response.headers.add('Content-Range', f'bytes {byte_start}-{byte_end}/{file_size}')
+        response.headers.add('Accept-Ranges', 'bytes')
+        response.headers.add('Content-Length', len(data))
+        return response
+    else:
+        # Return full file
+        response = send_file(
+            video_path,
+            mimetype=mimetype,
+            as_attachment=False,
+            conditional=True
+        )
+        response.headers.add('Accept-Ranges', 'bytes')
+        response.headers.add('Content-Length', file_size)
+        return response
 
 
 if __name__ == '__main__':

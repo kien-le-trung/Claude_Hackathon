@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Video Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            padding: 20px;
+            background: #1a1a1a;
+            color: white;
+        }
+        .video-container {
+            margin: 20px 0;
+            border: 2px solid #333;
+            padding: 20px;
+            border-radius: 8px;
+        }
+        video {
+            width: 100%;
+            max-width: 640px;
+            background: black;
+            border-radius: 4px;
+        }
+        .status {
+            margin: 10px 0;
+            padding: 10px;
+            background: #2a2a2a;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Video Loading Test</h1>
+
+    <div class="video-container">
+        <h2>Model Squat Video</h2>
+        <div class="status" id="status1">Loading...</div>
+        <video id="video1" controls loop muted>
+            <source src="/api/video/analyzed_model_squat.mp4" type="video/mp4">
+            Your browser does not support the video tag.
+        </video>
+    </div>
+
+    <div class="video-container">
+        <h2>Test Analysis Video</h2>
+        <div class="status" id="status2">Loading...</div>
+        <video id="video2" controls loop muted>
+            <source src="/api/video/analyzed_test_vid_2.mp4" type="video/mp4">
+            Your browser does not support the video tag.
+        </video>
+    </div>
+
+    <script>
+        function setupVideo(videoId, statusId) {
+            const video = document.getElementById(videoId);
+            const status = document.getElementById(statusId);
+
+            video.addEventListener('loadeddata', () => {
+                status.textContent = '✅ Video loaded successfully! Duration: ' + video.duration.toFixed(2) + 's';
+                status.style.background = '#0a5f0a';
+            });
+
+            video.addEventListener('error', (e) => {
+                const error = video.error;
+                let errorMsg = 'Unknown error';
+                if (error) {
+                    switch(error.code) {
+                        case 1: errorMsg = 'MEDIA_ERR_ABORTED - Fetching aborted'; break;
+                        case 2: errorMsg = 'MEDIA_ERR_NETWORK - Network error'; break;
+                        case 3: errorMsg = 'MEDIA_ERR_DECODE - Decoding error'; break;
+                        case 4: errorMsg = 'MEDIA_ERR_SRC_NOT_SUPPORTED - Format not supported'; break;
+                    }
+                }
+                status.textContent = '❌ Error: ' + errorMsg;
+                status.style.background = '#5f0a0a';
+                console.error('Video error:', error);
+            });
+
+            video.addEventListener('loadstart', () => {
+                status.textContent = '⏳ Loading video...';
+            });
+
+            video.addEventListener('canplay', () => {
+                status.textContent = '▶️ Video ready to play';
+                status.style.background = '#0a3f5f';
+            });
+        }
+
+        setupVideo('video1', 'status1');
+        setupVideo('video2', 'status2');
+    </script>
+</body>
+</html>

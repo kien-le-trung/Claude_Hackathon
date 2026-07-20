@@ -60,9 +60,44 @@
                     </div>
                 </div>
 
+                <!-- Video Comparison Section -->
+                <div class="video-comparison-card">
+                    <h3>📹 Video Analysis Comparison</h3>
+                    <div class="videos-container">
+                        <div class="video-item">
+                            <h4>Model Squat</h4>
+                            <video loop autoplay muted playsinline preload="auto">
+                                <source src="/api/video/analyzed_model_squat.mp4" type="video/mp4">
+                                Your browser does not support the video tag.
+                            </video>
+                        </div>
+                        <div class="video-item">
+                            <h4>Test Analysis</h4>
+                            <video loop autoplay muted playsinline preload="auto">
+                                <source src="/api/video/analyzed_test_vid_2.mp4" type="video/mp4">
+                                Your browser does not support the video tag.
+                            </video>
+                        </div>
+                    </div>
+                </div>
+
                 <div class="feedback-card">
                     <h3>📊 Analysis & Feedback</h3>
                     <div id="feedback-text" class="feedback-text"></div>
+
+                    <!-- What's Good Section -->
+                    <div class="feedback-section good-feedback">
+                        <h4>✅ What You're Doing Well</h4>
+                        <ul id="good-points" class="feedback-list">
+                        </ul>
+                    </div>
+
+                    <!-- What to Improve Section -->
+                    <div class="feedback-section improve-feedback">
+                        <h4>💡 Areas for Improvement</h4>
+                        <ul id="improve-points" class="feedback-list">
+                        </ul>
+                    </div>
 
                     <div class="details">
                         <h4>Details</h4>

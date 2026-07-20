@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c:*)",
+      "Bash(curl:*)",
+      "Bash(ffprobe:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

@@ -49,10 +49,19 @@ def analyze_video(video_path, model, output_dir="output"):
     all_keypoints = []
     frame_count = 0
 
-    # Prepare video writer for output
+    # Prepare video writer for output (use H.264 for web browser compatibility)
     output_video_path = os.path.join(output_dir, f"analyzed_{os.path.basename(video_path)}")
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter(output_video_path, fourcc, fps, (width, height))
+    # Try H.264 codec first (best browser support), fallback to mp4v if not available
+    try:
+        fourcc = cv2.VideoWriter_fourcc(*'avc1')  # H.264 codec
+        out = cv2.VideoWriter(output_video_path, fourcc, fps, (width, height))
+        if not out.isOpened():
+            raise Exception("avc1 codec failed")
+        print("  Using H.264 (avc1) codec for web compatibility")
+    except:
+        print("  Warning: H.264 codec not available, using mp4v (may not work in browsers)")
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        out = cv2.VideoWriter(output_video_path, fourcc, fps, (width, height))
 
     print("Processing frames...")
     while cap.isOpened():
@@ -161,7 +170,7 @@ def print_summary(keypoints_data):
 
 def main():
     """Main function to analyze the model squat video."""
-    video_path = "assets/model_squat.mp4"
+    video_path = "assets/test_vid_2.mp4"
 
     if not os.path.exists(video_path):
         print(f"Error: Video file not found at {video_path}")
