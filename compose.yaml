@@ -1,6 +1,7 @@
 services:
-  db:
+  postgres:
     image: postgres:16-alpine
+    container_name: squatspot-postgres
     environment:
       POSTGRES_DB: squatspot
       POSTGRES_USER: postgres
@@ -15,31 +16,6 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
-
-  api:
-    build:
-      context: .
-      dockerfile: apps/api/Dockerfile
-    environment:
-      SQUATSPOT_DATABASE_URL: postgresql+psycopg://postgres:postgres@db:5432/squatspot
-      SQUATSPOT_MODEL_WEIGHTS_PATH: /workspace/models/pose_iter_440000.caffemodel
-      SQUATSPOT_MODEL_CONFIG_PATH: /workspace/models/pose_deploy_linevec.prototxt
-      SQUATSPOT_REFERENCE_JSON_PATH: /workspace/output/model_squat_analysis.json
-    ports:
-      - "8000:8000"
-    depends_on:
-      db:
-        condition: service_healthy
-
-  web:
-    build:
-      context: ./apps/web
-    environment:
-      NEXT_PUBLIC_API_URL: http://localhost:8000
-    ports:
-      - "3000:3000"
-    depends_on:
-      - api
 
 volumes:
   postgres_data:

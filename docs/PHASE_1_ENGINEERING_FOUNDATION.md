@@ -7,7 +7,7 @@ This application replaces the legacy Flask/Jinja implementation while preserving
 - `apps/web`: Next.js + TypeScript client
 - `apps/api`: FastAPI + SQLAlchemy API
 - PostgreSQL 16
-- Docker Compose for local orchestration
+- PostgreSQL 16 in Docker Compose; frontend and API run directly on the host
 - Existing OpenPose COCO extraction and cosine-similarity comparator
 
 ## Persistence
@@ -39,13 +39,24 @@ Fields:
 The OpenPose weight file must be present under `models/` and the pre-extracted reference must be present at `output/model_squat_analysis.json`.
 
 ```bash
-docker compose up --build
+docker compose up -d postgres
+pip install -r apps/api/requirements.txt
+cd apps/api
+uvicorn app.main:app --reload
+```
+
+In a second terminal:
+
+```bash
+cd apps/web
+npm install
+npm run dev
 ```
 
 - Frontend: http://localhost:3000
 - API: http://localhost:8000
 - OpenAPI: http://localhost:8000/docs
-- PostgreSQL: localhost:5432
+- PostgreSQL container: localhost:5432
 
 ## Validation
 

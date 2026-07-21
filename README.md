@@ -14,7 +14,7 @@ output/                   Reference analysis JSON (local, ignored)
 openpose_model.py         OpenCV/OpenPose model wrapper used by the API
 analyze_model_squat.py    Regenerates the reference analysis
 download_openpose_model.py
-compose.yaml              Local application stack
+compose.yaml              Local PostgreSQL container
 ```
 
 The former Flask/Jinja application has been removed. Scoring now lives in `apps/api/app/comparator.py` and video processing lives in `apps/api/app/analysis.py`.
@@ -33,16 +33,37 @@ Download the model if needed:
 python download_openpose_model.py
 ```
 
-Start the complete stack:
+Start PostgreSQL in Docker:
 
 ```bash
-docker compose up --build
+docker compose up -d postgres
+```
+
+Run the API on the host:
+
+```bash
+python -m venv .venv
+# Windows: .venv\Scripts\activate
+# macOS/Linux: source .venv/bin/activate
+pip install -r apps/api/requirements.txt
+cd apps/api
+uvicorn app.main:app --reload
+```
+
+In another terminal, run the frontend on the host:
+
+```bash
+cd apps/web
+npm install
+npm run dev
 ```
 
 - Frontend: http://localhost:3000
 - API: http://localhost:8000
 - OpenAPI: http://localhost:8000/docs
-- PostgreSQL: localhost:5432
+- PostgreSQL container: localhost:5432
+
+Stop PostgreSQL with `docker compose down`. Add `--volumes` only when you intentionally want to delete the local database.
 
 ## API
 
