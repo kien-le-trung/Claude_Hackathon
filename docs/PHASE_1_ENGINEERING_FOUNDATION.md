@@ -1,6 +1,6 @@
 # Phase 1 Engineering Foundation
 
-This branch introduces a parallel application foundation without changing the legacy Flask application or its scoring behavior.
+This application replaces the legacy Flask/Jinja implementation while preserving its scoring behavior in the FastAPI comparator.
 
 ## Stack
 
@@ -32,7 +32,7 @@ Fields:
 - `POST /api/videos`
 - `GET /api/videos/{id}`
 
-`POST /api/videos` currently completes analysis within the request. The code separates API, analysis, comparison, configuration, and persistence so a queue/worker can be introduced later without changing the data model or comparator.
+`POST /api/videos` stores the upload metadata, schedules analysis as a FastAPI background task, and returns `202 Accepted`. Clients poll `GET /api/videos/{id}` for completion. The code separates API, analysis, comparison, configuration, and persistence so a durable queue/worker can later be introduced without changing the data model or comparator.
 
 ## Run locally
 
