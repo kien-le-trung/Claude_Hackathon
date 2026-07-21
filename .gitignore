@@ -26,6 +26,10 @@ ENV/
 env/
 .venv
 
+# Node / Next.js
+node_modules/
+.next/
+
 # IDEs
 .vscode/
 .idea/
@@ -39,10 +43,12 @@ env/
 *.onnx
 *.caffemodel
 *.prototxt
+*.task
 models/*.pth
 models/*.onnx
 
 # Test outputs
+.pytest_cache/
 output/
 results/
 *.jpg

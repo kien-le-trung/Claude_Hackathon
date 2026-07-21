@@ -5,15 +5,21 @@ import { FormEvent, useState } from "react";
 type AnalysisResponse = {
   id: string;
   status: "queued" | "processing" | "completed" | "failed";
-  result?: {
-    score: number;
-    feedback: string;
-    details: {
-      detection_rate: number;
-      frames_analyzed: number;
+  extraction?: {
+    schema_version: number;
+    model: string;
+    video: {
+      fps: number;
       total_frames: number;
-      consistency: number;
+      duration_seconds: number;
+      width: number;
+      height: number;
+      content_type: string;
     };
+    sampling_fps: number;
+    sampled_frame_count: number;
+    detected_frame_count: number;
+    detection_rate: number;
   } | null;
   error_message?: string | null;
 };
@@ -85,22 +91,25 @@ export default function HomePage() {
           </button>
         </form>
 
-        {analysis && !analysis.result && !error && (
+        {analysis && !analysis.extraction && !error && (
           <p>Analysis status: {analysis.status}</p>
         )}
         {error && <p className="error">{error}</p>}
 
-        {analysis?.result && (
+        {analysis?.extraction && (
           <article className="result">
-            <div>
-              <span className="score">{analysis.result.score}</span>
-              <span>/100</span>
-            </div>
-            <p>{analysis.result.feedback}</p>
+            <h2>Landmark extraction complete</h2>
+            <p>
+              MediaPipe detected a pose in {analysis.extraction.detected_frame_count} of{" "}
+              {analysis.extraction.sampled_frame_count} sampled frames.
+            </p>
             <dl>
-              <div><dt>Detection</dt><dd>{analysis.result.details.detection_rate}%</dd></div>
-              <div><dt>Consistency</dt><dd>{analysis.result.details.consistency}%</dd></div>
-              <div><dt>Frames analyzed</dt><dd>{analysis.result.details.frames_analyzed}</dd></div>
+              <div><dt>Detection rate</dt><dd>{analysis.extraction.detection_rate}%</dd></div>
+              <div><dt>Sampling rate</dt><dd>{analysis.extraction.sampling_fps} FPS</dd></div>
+              <div><dt>Duration</dt><dd>{analysis.extraction.video.duration_seconds.toFixed(1)}s</dd></div>
+              <div><dt>Resolution</dt><dd>{analysis.extraction.video.width} × {analysis.extraction.video.height}</dd></div>
+              <div><dt>Model</dt><dd>{analysis.extraction.model}</dd></div>
+              <div><dt>Status</dt><dd>Completed</dd></div>
             </dl>
           </article>
         )}

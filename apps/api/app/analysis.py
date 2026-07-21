@@ -1,86 +1,145 @@
-import json
 import os
 from pathlib import Path
+from typing import Callable
 
 import cv2
+import mediapipe as mp
+from mediapipe.tasks import python
+from mediapipe.tasks.python import vision
 
-from openpose_model import OpenPoseModel
-
-from .comparator import compare_squats
 from .config import Settings
+from .validation import VideoMetadata
 
 
-class AnalysisService:
-    def __init__(self, settings: Settings):
+SCHEMA_VERSION = 1
+LANDMARK_NAMES = (
+    "NOSE", "LEFT_EYE_INNER", "LEFT_EYE", "LEFT_EYE_OUTER",
+    "RIGHT_EYE_INNER", "RIGHT_EYE", "RIGHT_EYE_OUTER", "LEFT_EAR",
+    "RIGHT_EAR", "MOUTH_LEFT", "MOUTH_RIGHT", "LEFT_SHOULDER",
+    "RIGHT_SHOULDER", "LEFT_ELBOW", "RIGHT_ELBOW", "LEFT_WRIST",
+    "RIGHT_WRIST", "LEFT_PINKY", "RIGHT_PINKY", "LEFT_INDEX",
+    "RIGHT_INDEX", "LEFT_THUMB", "RIGHT_THUMB", "LEFT_HIP", "RIGHT_HIP",
+    "LEFT_KNEE", "RIGHT_KNEE", "LEFT_ANKLE", "RIGHT_ANKLE", "LEFT_HEEL",
+    "RIGHT_HEEL", "LEFT_FOOT_INDEX", "RIGHT_FOOT_INDEX",
+)
+
+
+def _optional_float(value) -> float | None:
+    return None if value is None else float(value)
+
+
+def _serialize_landmarks(landmarks: list) -> list[dict]:
+    return [
+        {
+            "index": index,
+            "name": LANDMARK_NAMES[index],
+            "x": float(landmark.x),
+            "y": float(landmark.y),
+            "z": float(landmark.z),
+            "visibility": _optional_float(getattr(landmark, "visibility", None)),
+            "presence": _optional_float(getattr(landmark, "presence", None)),
+        }
+        for index, landmark in enumerate(landmarks)
+    ]
+
+
+class LandmarkExtractionService:
+    def __init__(
+        self,
+        settings: Settings,
+        landmarker_factory: Callable[[], object] | None = None,
+    ):
         self.settings = settings
-        self._model: OpenPoseModel | None = None
-        self._reference: dict | None = None
+        self._landmarker_factory = landmarker_factory or self._create_landmarker
 
-    def _load_model(self) -> OpenPoseModel:
-        if self._model is None:
-            model = OpenPoseModel()
-            model.load_model(
-                str(self.settings.model_weights_path.resolve()),
-                str(self.settings.model_config_path.resolve()),
+    def _create_landmarker(self):
+        model_path = self.settings.mediapipe_model_path.resolve()
+        if not model_path.is_file():
+            raise FileNotFoundError(
+                f"MediaPipe model not found at {model_path}. Run download_mediapipe_model.py."
             )
-            self._model = model
-        return self._model
+        options = vision.PoseLandmarkerOptions(
+            base_options=python.BaseOptions(model_asset_path=str(model_path)),
+            running_mode=vision.RunningMode.VIDEO,
+            num_poses=1,
+            min_pose_detection_confidence=self.settings.pose_detection_confidence,
+            min_pose_presence_confidence=self.settings.pose_presence_confidence,
+            min_tracking_confidence=self.settings.tracking_confidence,
+            output_segmentation_masks=False,
+        )
+        return vision.PoseLandmarker.create_from_options(options)
 
-    def _load_reference(self) -> dict:
-        if self._reference is None:
-            with self.settings.reference_json_path.resolve().open("r", encoding="utf-8") as handle:
-                self._reference = json.load(handle)
-        return self._reference
-
-    def extract_keypoints(self, video_path: Path, frame_skip: int = 5) -> dict:
+    def extract(self, video_path: Path, metadata: VideoMetadata) -> dict:
         capture = cv2.VideoCapture(str(video_path))
         if not capture.isOpened():
-            raise ValueError("Could not open uploaded video")
+            capture.release()
+            raise ValueError("Validated video could not be reopened")
 
-        fps = capture.get(cv2.CAP_PROP_FPS)
-        total_frames = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
-        frames = []
+        frames: list[dict] = []
+        detected_frame_count = 0
         frame_number = 0
-        model = self._load_model()
+        sample_interval_ms = 1000.0 / self.settings.target_sampling_fps
+        next_sample_ms = 0.0
 
         try:
-            while capture.isOpened():
-                success, frame = capture.read()
-                if not success:
-                    break
-                frame_number += 1
-                if frame_number % frame_skip:
-                    continue
-                keypoints, _ = model.detect(frame)
-                detected = []
-                for index, keypoint in enumerate(keypoints):
-                    if keypoint is not None:
-                        detected.append({
-                            "body_part": model.get_body_part_name(index),
-                            "index": index,
-                            "x": float(keypoint[0]),
-                            "y": float(keypoint[1]),
+            with self._landmarker_factory() as landmarker:
+                while capture.isOpened():
+                    decoded, frame = capture.read()
+                    if not decoded:
+                        break
+                    timestamp_ms = frame_number * 1000.0 / metadata.fps
+                    if timestamp_ms + 1e-6 >= next_sample_ms:
+                        integer_timestamp_ms = int(round(timestamp_ms))
+                        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                        image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
+                        result = landmarker.detect_for_video(image, integer_timestamp_ms)
+                        poses = []
+                        if result.pose_landmarks:
+                            detected_frame_count += 1
+                            poses.append({
+                                "landmarks": _serialize_landmarks(result.pose_landmarks[0]),
+                                "world_landmarks": _serialize_landmarks(
+                                    result.pose_world_landmarks[0]
+                                    if result.pose_world_landmarks else []
+                                ),
+                            })
+                        frames.append({
+                            "frame_number": frame_number,
+                            "timestamp_ms": integer_timestamp_ms,
+                            "poses": poses,
                         })
-                frames.append({
-                    "frame_number": frame_number,
-                    "timestamp": frame_number / fps if fps else 0,
-                    "keypoints": detected,
-                })
+                        next_sample_ms += sample_interval_ms
+                    frame_number += 1
         finally:
             capture.release()
 
+        sampled_frame_count = len(frames)
+        summary = {
+            "schema_version": SCHEMA_VERSION,
+            "model": "pose_landmarker_full",
+            "video": metadata.to_dict(),
+            "sampling_fps": self.settings.target_sampling_fps,
+            "sampled_frame_count": sampled_frame_count,
+            "detected_frame_count": detected_frame_count,
+            "detection_rate": round(
+                detected_frame_count / sampled_frame_count * 100, 1
+            ) if sampled_frame_count else 0.0,
+        }
         return {
-            "fps": fps,
-            "total_frames": total_frames,
-            "duration": total_frames / fps if fps else 0,
-            "frame_skip": frame_skip,
+            "schema_version": SCHEMA_VERSION,
+            "extractor": {
+                "name": "mediapipe_pose_landmarker",
+                "model": "pose_landmarker_full",
+                "num_poses": 1,
+                "min_pose_detection_confidence": self.settings.pose_detection_confidence,
+                "min_pose_presence_confidence": self.settings.pose_presence_confidence,
+                "min_tracking_confidence": self.settings.tracking_confidence,
+            },
+            "video": metadata.to_dict(),
+            "sampling": {"target_fps": self.settings.target_sampling_fps},
+            "summary": summary,
             "frames": frames,
         }
-
-    def analyze(self, video_path: Path) -> dict:
-        extracted = self.extract_keypoints(video_path)
-        comparison = compare_squats(extracted, self._load_reference())
-        return {"user_data": extracted, "results": comparison}
 
     @staticmethod
     def delete_temporary_file(path: Path) -> None:

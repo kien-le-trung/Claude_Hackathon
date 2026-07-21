@@ -5,12 +5,14 @@ from fastapi import BackgroundTasks, Depends, FastAPI, File, HTTPException, Uplo
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
-from .analysis import AnalysisService
+from .analysis import LandmarkExtractionService
 from .config import get_settings
 from .database import SessionLocal, Video, get_db
+from .validation import VideoMetadata, VideoValidationError, VideoValidator
 
 settings = get_settings()
-analysis_service = AnalysisService(settings)
+extraction_service = LandmarkExtractionService(settings)
+video_validator = VideoValidator(settings)
 app = FastAPI(title=settings.app_name, version="1.0.0")
 app.add_middleware(
     CORSMiddleware,
@@ -22,25 +24,27 @@ app.add_middleware(
 
 
 def serialize_video(video: Video) -> dict:
-    result = video.extracted_json.get("results") if video.extracted_json else None
+    extraction = video.extracted_json.get("summary") if video.extracted_json else None
     return {
         "id": str(video.id),
         "date_created": video.date_created,
         "status": video.status,
         "original_filename": video.original_filename,
         "content_type": video.content_type,
-        "result": result,
+        "extraction": extraction,
         "error_message": video.error_message,
     }
 
 
-def process_video(video_id: UUID, temporary_path: Path) -> None:
+def process_video(video_id: UUID, temporary_path: Path, metadata: VideoMetadata) -> None:
     db = SessionLocal()
     try:
         record = db.get(Video, video_id)
         if record is None:
             return
-        record.extracted_json = analysis_service.analyze(temporary_path)
+        record.status = "processing"
+        db.commit()
+        record.extracted_json = extraction_service.extract(temporary_path, metadata)
         record.status = "completed"
         record.error_message = None
         db.commit()
@@ -52,7 +56,7 @@ def process_video(video_id: UUID, temporary_path: Path) -> None:
             record.error_message = str(exc)[:1000]
             db.commit()
     finally:
-        analysis_service.delete_temporary_file(temporary_path)
+        extraction_service.delete_temporary_file(temporary_path)
         db.close()
 
 
@@ -67,20 +71,14 @@ def analyze_video(
     video: UploadFile = File(...),
     db: Session = Depends(get_db),
 ) -> dict:
-    suffix = Path(video.filename or "").suffix.lower().lstrip(".")
-    if suffix not in settings.allowed_extensions:
-        raise HTTPException(status_code=400, detail="Unsupported video extension")
+    try:
+        suffix = video_validator.validate_upload(video.filename, video.content_type)
+    except VideoValidationError as exc:
+        video.file.close()
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
     settings.temp_dir.mkdir(parents=True, exist_ok=True)
     temporary_path = settings.temp_dir / f"{uuid4()}.{suffix}"
-    record = Video(
-        status="queued",
-        original_filename=video.filename,
-        content_type=video.content_type,
-    )
-    db.add(record)
-    db.commit()
-    db.refresh(record)
 
     try:
         bytes_written = 0
@@ -90,19 +88,30 @@ def analyze_video(
                 if bytes_written > settings.max_upload_bytes:
                     raise HTTPException(status_code=413, detail="Video exceeds 100 MB limit")
                 output.write(chunk)
+        metadata = video_validator.validate_file(temporary_path, video.content_type or "")
+    except VideoValidationError as exc:
+        extraction_service.delete_temporary_file(temporary_path)
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     except Exception:
-        analysis_service.delete_temporary_file(temporary_path)
-        record.status = "failed"
-        record.error_message = "Upload rejected"
-        db.commit()
+        extraction_service.delete_temporary_file(temporary_path)
         raise
     finally:
         video.file.close()
 
-    record.status = "processing"
-    db.commit()
-    db.refresh(record)
-    background_tasks.add_task(process_video, record.id, temporary_path)
+    try:
+        record = Video(
+            status="queued",
+            original_filename=video.filename,
+            content_type=metadata.content_type,
+        )
+        db.add(record)
+        db.commit()
+        db.refresh(record)
+    except Exception:
+        extraction_service.delete_temporary_file(temporary_path)
+        raise
+
+    background_tasks.add_task(process_video, record.id, temporary_path, metadata)
     return serialize_video(record)
 
 
