@@ -21,6 +21,10 @@ class Settings(BaseSettings):
     pose_detection_confidence: float = 0.5
     pose_presence_confidence: float = 0.5
     tracking_confidence: float = 0.5
+    classifier_enabled: bool = True
+    classifier_model_dir: Path = PROJECT_ROOT / "models/runtime/squat_form/v3"
+    classifier_error_threshold: float = 0.8
+    artifact_root: Path = PROJECT_ROOT / "output" / "analysis-artifacts"
     allowed_extensions: set[str] = {"mp4", "avi", "mov", "mkv"}
     allowed_mime_types: dict[str, set[str]] = {
         "mp4": {"video/mp4", "application/mp4"},

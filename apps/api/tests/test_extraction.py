@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 from app import analysis
 from app.analysis import LANDMARK_NAMES, LandmarkExtractionService
 from app.validation import VideoMetadata
@@ -101,3 +103,57 @@ def test_extraction_preserves_frames_without_a_detected_pose(monkeypatch):
     )
     assert payload["frames"][0]["poses"] == []
     assert payload["summary"]["detection_rate"] == 0.0
+
+
+@pytest.mark.parametrize(
+    ("source_fps", "frame_count", "expected_samples"),
+    [(5.0, 5, 5), (10.0, 10, 10), (24.0, 24, 10), (30.0, 30, 10), (60.0, 60, 10)],
+)
+def test_sampling_caps_at_ten_fps_without_dropping_slow_sources(
+    monkeypatch, source_fps, frame_count, expected_samples
+):
+    landmarker = FakeLandmarker()
+    monkeypatch.setattr(analysis.cv2, "VideoCapture", lambda _: FakeCapture(frame_count))
+    monkeypatch.setattr(analysis.cv2, "cvtColor", lambda frame, _: frame)
+    monkeypatch.setattr(analysis.mp, "Image", lambda **kwargs: kwargs)
+    settings = SimpleNamespace(
+        target_sampling_fps=10.0,
+        pose_detection_confidence=0.5,
+        pose_presence_confidence=0.5,
+        tracking_confidence=0.5,
+    )
+    metadata = VideoMetadata(
+        source_fps, frame_count, frame_count / source_fps, 640, 480, "video/mp4"
+    )
+    payload = LandmarkExtractionService(settings, lambda: landmarker).extract(
+        "video.mp4", metadata
+    )
+    assert payload["summary"]["sampled_frame_count"] == expected_samples
+    assert payload["summary"]["decoded_frame_count"] == frame_count
+    assert payload["sampling"]["effective_fps"] == min(source_fps, 10.0)
+
+
+def test_variable_frame_timestamps_drive_sampling(monkeypatch):
+    class TimedCapture(FakeCapture):
+        timestamps = [0.0, 40.0, 105.0, 170.0, 205.0, 310.0]
+
+        def get(self, property_id):
+            if property_id == analysis.cv2.CAP_PROP_POS_MSEC:
+                return self.timestamps[self.index - 1]
+            return 0.0
+
+    landmarker = FakeLandmarker()
+    monkeypatch.setattr(analysis.cv2, "VideoCapture", lambda _: TimedCapture(6))
+    monkeypatch.setattr(analysis.cv2, "cvtColor", lambda frame, _: frame)
+    monkeypatch.setattr(analysis.mp, "Image", lambda **kwargs: kwargs)
+    settings = SimpleNamespace(
+        target_sampling_fps=10.0,
+        pose_detection_confidence=0.5,
+        pose_presence_confidence=0.5,
+        tracking_confidence=0.5,
+    )
+    metadata = VideoMetadata(30.0, 6, 0.32, 640, 480, "video/mp4")
+    LandmarkExtractionService(settings, lambda: landmarker).extract(
+        "video.mp4", metadata
+    )
+    assert landmarker.timestamps == [0, 105, 205, 310]

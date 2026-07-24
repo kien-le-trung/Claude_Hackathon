@@ -1,0 +1,118 @@
+{
+  "model_version": "v3",
+  "label_order": [
+    "good",
+    "bad_back",
+    "bad_heel"
+  ],
+  "feature_schema_version": "mediapipe_pose_biomechanics_v3",
+  "feature_set": "biomechanical",
+  "feature_count": 26,
+  "extraction_schema_version": 1,
+  "biomechanical_feature_names": [
+    "left_knee_angle_world",
+    "right_knee_angle_world",
+    "left_hip_angle_world",
+    "right_hip_angle_world",
+    "left_ankle_angle_world",
+    "right_ankle_angle_world",
+    "left_foot_pitch_world",
+    "right_foot_pitch_world",
+    "torso_lean_image",
+    "torso_lean_world",
+    "knee_angle_asymmetry",
+    "hip_angle_asymmetry",
+    "ankle_angle_asymmetry"
+  ],
+  "mediapipe": {
+    "model": "pose_landmarker_full",
+    "num_poses": 1,
+    "min_pose_detection_confidence": 0.5,
+    "min_pose_presence_confidence": 0.5
+  },
+  "metrics": {
+    "model": "linear_svm",
+    "feature_set": "biomechanical",
+    "macro_f1": 0.8131742283058072,
+    "balanced_accuracy": 0.8130497971502079,
+    "minimum_class_recall": 0.7129032258064516,
+    "class_recalls": {
+      "good": 0.7129032258064516,
+      "bad_back": 0.7668711656441718,
+      "bad_heel": 0.959375
+    },
+    "classification_report": {
+      "good": {
+        "precision": 0.775438596491228,
+        "recall": 0.7129032258064516,
+        "f1-score": 0.7428571428571429,
+        "support": 310.0
+      },
+      "bad_back": {
+        "precision": 1.0,
+        "recall": 0.7668711656441718,
+        "f1-score": 0.8680555555555556,
+        "support": 326.0
+      },
+      "bad_heel": {
+        "precision": 0.7292161520190024,
+        "recall": 0.959375,
+        "f1-score": 0.8286099865047234,
+        "support": 320.0
+      },
+      "accuracy": 0.8138075313807531,
+      "macro avg": {
+        "precision": 0.8348849161700768,
+        "recall": 0.8130497971502079,
+        "f1-score": 0.8131742283058072,
+        "support": 956.0
+      },
+      "weighted avg": {
+        "precision": 0.8365430267346877,
+        "recall": 0.8138075313807531,
+        "f1-score": 0.814254206148888,
+        "support": 956.0
+      }
+    },
+    "confusion_matrix": [
+      [
+        221,
+        0,
+        89
+      ],
+      [
+        51,
+        250,
+        25
+      ],
+      [
+        13,
+        0,
+        307
+      ]
+    ],
+    "probability_calibration": {
+      "good": 0.11586211961582309,
+      "bad_back": 0.05861992160476134,
+      "bad_heel": 0.08984660105452907
+    }
+  },
+  "coverage": {
+    "good": 1.0,
+    "bad_back": 0.9735249621785174,
+    "bad_heel": 0.9991474850809889
+  },
+  "manifest_sha256": "5096f4f292c7181646fba19b7d9559bbcf321f2f433be40409c4625cd24eb7d1",
+  "evaluation_warning": "The supplied image-level split contains sequential frames and may leak adjacent poses across train and test; metrics can be optimistic.",
+  "dataset_doi": "10.5281/zenodo.17558630",
+  "dataset_archive_md5": "cebeb32ac04dab34d4abe9686a9fc5d3",
+  "training_commit": "de55608dcac7849766d46e4ad765818bd145f049",
+  "error_threshold": 0.8,
+  "config_sha256": "bf07d8dd869bd10ca4cec3fa8c45373bc09e402a6e28b343416519c0f51b2209",
+  "dependencies": {
+    "python": "3.13.7",
+    "scikit_learn": "1.8.0",
+    "mediapipe": "0.10.35"
+  },
+  "artifact_sha256": "112d64a15183283301f0f778f76ddc3d058c3061bdd713530840d6e1f26ed2c8"
+}

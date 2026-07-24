@@ -1,19 +1,45 @@
+import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 from uuid import UUID, uuid4
 
 from fastapi import BackgroundTasks, Depends, FastAPI, File, HTTPException, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, Response
 from sqlalchemy.orm import Session
 
 from .analysis import LandmarkExtractionService
+from .artifacts import artifact_path, create_event_artifacts, delete_video_artifacts
+from .classification import SquatFormClassifier
 from .config import get_settings
 from .database import SessionLocal, Video, get_db
+from .events import public_event
 from .validation import VideoMetadata, VideoValidationError, VideoValidator
 
 settings = get_settings()
 extraction_service = LandmarkExtractionService(settings)
 video_validator = VideoValidator(settings)
-app = FastAPI(title=settings.app_name, version="1.0.0")
+classifier_service = None
+
+
+def get_classifier() -> SquatFormClassifier:
+    global classifier_service
+    if not settings.classifier_enabled:
+        raise RuntimeError("Squat-form classifier is required but disabled")
+    if classifier_service is None:
+        classifier_service = SquatFormClassifier(
+            settings.classifier_model_dir, settings.classifier_error_threshold
+        )
+    return classifier_service
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    get_classifier()
+    yield
+
+
+app = FastAPI(title=settings.app_name, version="1.0.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
@@ -25,6 +51,17 @@ app.add_middleware(
 
 def serialize_video(video: Video) -> dict:
     extraction = video.extracted_json.get("summary") if video.extracted_json else None
+    progress = video.extracted_json.get("progress") if video.extracted_json else None
+    classification = (
+        video.extracted_json.get("classification", {}).get("summary")
+        if video.extracted_json else None
+    )
+    if classification:
+        classification = dict(classification)
+        classification["events"] = [
+            public_event(event, str(video.id))
+            for event in classification.get("events", [])
+        ]
     return {
         "id": str(video.id),
         "date_created": video.date_created,
@@ -32,6 +69,8 @@ def serialize_video(video: Video) -> dict:
         "original_filename": video.original_filename,
         "content_type": video.content_type,
         "extraction": extraction,
+        "classification": classification,
+        "progress": progress,
         "error_message": video.error_message,
     }
 
@@ -43,8 +82,70 @@ def process_video(video_id: UUID, temporary_path: Path, metadata: VideoMetadata)
         if record is None:
             return
         record.status = "processing"
+        record.extracted_json = {
+            "progress": {
+                "decoded_frame_count": 0,
+                "sampled_frame_count": 0,
+                "detected_frame_count": 0,
+                "classified_frame_count": 0,
+                "total_frame_count": metadata.total_frames,
+                "percent": 0.0,
+            }
+        }
         db.commit()
-        record.extracted_json = extraction_service.extract(temporary_path, metadata)
+        last_progress_write = 0.0
+
+        def update_progress(progress: dict) -> None:
+            nonlocal last_progress_write
+            now = time.monotonic()
+            if now - last_progress_write < 1.0 and progress["percent"] < 100.0:
+                return
+            record.extracted_json = {
+                "progress": {**progress, "classified_frame_count": 0}
+            }
+            db.commit()
+            last_progress_write = now
+
+        payload = extraction_service.extract(
+            temporary_path, metadata, progress_callback=update_progress
+        )
+        classifier = get_classifier()
+        payload["classification"] = classifier.classify(payload)
+        events = payload["classification"]["events"]
+        create_event_artifacts(
+            temporary_path, events, settings.artifact_root, str(video_id)
+        )
+
+        prediction_by_frame = {
+            item["frame_number"]: item
+            for item in payload["classification"]["frames"]
+        }
+        compact_frames = []
+        for frame in payload["frames"]:
+            compact = {
+                "frame_number": frame["frame_number"],
+                "timestamp_ms": frame["timestamp_ms"],
+                "pose_detected": bool(frame["poses"]),
+            }
+            prediction = prediction_by_frame.get(frame["frame_number"])
+            if prediction:
+                compact.update(prediction)
+            compact_frames.append(compact)
+        payload["evidence"] = {"frames": compact_frames}
+        payload.pop("frames", None)
+        for event in events:
+            event.pop("_representative_pose", None)
+        payload["classification"].pop("frames", None)
+        payload["classification"].pop("events", None)
+        payload["progress"] = {
+            "decoded_frame_count": payload["summary"]["decoded_frame_count"],
+            "sampled_frame_count": payload["summary"]["sampled_frame_count"],
+            "detected_frame_count": payload["summary"]["detected_frame_count"],
+            "classified_frame_count": payload["classification"]["summary"]["classified_frame_count"],
+            "total_frame_count": metadata.total_frames,
+            "percent": 100.0,
+        }
+        record.extracted_json = payload
         record.status = "completed"
         record.error_message = None
         db.commit()
@@ -55,6 +156,7 @@ def process_video(video_id: UUID, temporary_path: Path, metadata: VideoMetadata)
             record.status = "failed"
             record.error_message = str(exc)[:1000]
             db.commit()
+        delete_video_artifacts(settings.artifact_root, str(video_id))
     finally:
         extraction_service.delete_temporary_file(temporary_path)
         db.close()
@@ -62,7 +164,14 @@ def process_video(video_id: UUID, temporary_path: Path, metadata: VideoMetadata)
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok"}
+    try:
+        classifier = get_classifier()
+        return {
+            "status": "ok",
+            "classifier": classifier.metadata["model_version"],
+        }
+    except Exception as exc:
+        return {"status": "unhealthy", "classifier_error": str(exc)}
 
 
 @app.post(f"{settings.api_prefix}/videos", status_code=status.HTTP_202_ACCEPTED)
@@ -121,3 +230,37 @@ def get_video(video_id: UUID, db: Session = Depends(get_db)) -> dict:
     if record is None:
         raise HTTPException(status_code=404, detail="Video analysis not found")
     return serialize_video(record)
+
+
+@app.get(f"{settings.api_prefix}/videos/{{video_id}}/events/{{event_id}}/frame")
+def get_event_frame(
+    video_id: UUID,
+    event_id: UUID,
+    db: Session = Depends(get_db),
+):
+    record = db.get(Video, video_id)
+    if record is None or not record.extracted_json:
+        raise HTTPException(status_code=404, detail="Video analysis not found")
+    events = (
+        record.extracted_json.get("classification", {})
+        .get("summary", {})
+        .get("events", [])
+    )
+    event = next((item for item in events if item.get("id") == str(event_id)), None)
+    if event is None or not event.get("frame_image_path"):
+        raise HTTPException(status_code=404, detail="Representative frame not found")
+    path = artifact_path(settings.artifact_root, event["frame_image_path"])
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Representative frame not found")
+    return FileResponse(path, media_type="image/webp")
+
+
+@app.delete(f"{settings.api_prefix}/videos/{{video_id}}", status_code=204)
+def delete_video(video_id: UUID, db: Session = Depends(get_db)) -> Response:
+    record = db.get(Video, video_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Video analysis not found")
+    delete_video_artifacts(settings.artifact_root, str(video_id))
+    db.delete(record)
+    db.commit()
+    return Response(status_code=204)

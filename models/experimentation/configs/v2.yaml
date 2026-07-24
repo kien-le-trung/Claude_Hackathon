@@ -1,0 +1,22 @@
+version: v2
+seed: 42
+dataset_doi: 10.5281/zenodo.17558630
+dataset_archive_md5: cebeb32ac04dab34d4abe9686a9fc5d3
+dataset_root: assets/data
+mediapipe_model: models/pose_landmarker_full.task
+feature_sets: [biomechanical]
+labels: [good, bad_back, bad_heel]
+mediapipe:
+  model: pose_landmarker_full
+  num_poses: 1
+  min_pose_detection_confidence: 0.5
+  min_pose_presence_confidence: 0.5
+promotion:
+  macro_f1: 0.80
+  minimum_class_recall: 0.70
+  minimum_class_coverage: 0.95
+runtime:
+  error_threshold: 0.80
+evaluation_warning: >-
+  The supplied image-level split contains sequential frames and may leak adjacent
+  poses across train and test; metrics can be optimistic.

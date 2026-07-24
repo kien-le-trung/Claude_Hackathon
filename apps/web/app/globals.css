@@ -12,6 +12,16 @@ button { border: 0; border-radius: 12px; padding: 14px 18px; font-weight: 700; c
 button:disabled { cursor: not-allowed; opacity: .55; }
 .error { color: #b03a2e; }
 .result { margin-top: 28px; border-top: 1px solid #e5e7e9; padding-top: 24px; }
+.progress-panel { margin-top: 24px; }
+progress { width: 100%; height: 14px; accent-color: #2874a6; }
+.event-list { display: grid; gap: 18px; margin: 20px 0; }
+.event-card { overflow: hidden; border: 1px solid #dfe6e9; border-radius: 14px; background: #fff; }
+.event-card img, .image-fallback { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: cover; background: #e9eef2; }
+.image-fallback { display: grid; place-items: center; color: #566573; }
+.event-body { padding: 18px; }
+.event-body h3 { margin: 0 0 6px; }
+.measurements { grid-template-columns: repeat(2, 1fr); }
+.delete-button { margin-top: 20px; color: #922b21; background: #fadbd8; }
 h2 { margin: 0 0 8px; }
 dl { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
 dl div { background: #f8f9f9; padding: 14px; border-radius: 10px; }

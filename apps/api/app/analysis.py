@@ -69,7 +69,12 @@ class LandmarkExtractionService:
         )
         return vision.PoseLandmarker.create_from_options(options)
 
-    def extract(self, video_path: Path, metadata: VideoMetadata) -> dict:
+    def extract(
+        self,
+        video_path: Path,
+        metadata: VideoMetadata,
+        progress_callback: Callable[[dict], None] | None = None,
+    ) -> dict:
         capture = cv2.VideoCapture(str(video_path))
         if not capture.isOpened():
             capture.release()
@@ -80,6 +85,8 @@ class LandmarkExtractionService:
         frame_number = 0
         sample_interval_ms = 1000.0 / self.settings.target_sampling_fps
         next_sample_ms = 0.0
+        effective_fps = min(metadata.fps, self.settings.target_sampling_fps)
+        previous_timestamp_ms = -1.0
 
         try:
             with self._landmarker_factory() as landmarker:
@@ -88,6 +95,11 @@ class LandmarkExtractionService:
                     if not decoded:
                         break
                     timestamp_ms = frame_number * 1000.0 / metadata.fps
+                    if hasattr(capture, "get"):
+                        reported_ms = float(capture.get(cv2.CAP_PROP_POS_MSEC))
+                        if reported_ms >= 0 and (frame_number == 0 or reported_ms > previous_timestamp_ms):
+                            timestamp_ms = reported_ms
+                    previous_timestamp_ms = timestamp_ms
                     if timestamp_ms + 1e-6 >= next_sample_ms:
                         integer_timestamp_ms = int(round(timestamp_ms))
                         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -109,6 +121,17 @@ class LandmarkExtractionService:
                             "poses": poses,
                         })
                         next_sample_ms += sample_interval_ms
+                    if progress_callback is not None:
+                        progress_callback({
+                            "decoded_frame_count": frame_number + 1,
+                            "sampled_frame_count": len(frames),
+                            "detected_frame_count": detected_frame_count,
+                            "total_frame_count": metadata.total_frames,
+                            "percent": round(
+                                min((frame_number + 1) / metadata.total_frames * 100, 100.0),
+                                1,
+                            ),
+                        })
                     frame_number += 1
         finally:
             capture.release()
@@ -119,6 +142,8 @@ class LandmarkExtractionService:
             "model": "pose_landmarker_full",
             "video": metadata.to_dict(),
             "sampling_fps": self.settings.target_sampling_fps,
+            "effective_sampling_fps": effective_fps,
+            "decoded_frame_count": frame_number,
             "sampled_frame_count": sampled_frame_count,
             "detected_frame_count": detected_frame_count,
             "detection_rate": round(
@@ -136,7 +161,10 @@ class LandmarkExtractionService:
                 "min_tracking_confidence": self.settings.tracking_confidence,
             },
             "video": metadata.to_dict(),
-            "sampling": {"target_fps": self.settings.target_sampling_fps},
+            "sampling": {
+                "target_fps": self.settings.target_sampling_fps,
+                "effective_fps": effective_fps,
+            },
             "summary": summary,
             "frames": frames,
         }

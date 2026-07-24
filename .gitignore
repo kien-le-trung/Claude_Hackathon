@@ -25,6 +25,7 @@ venv/
 ENV/
 env/
 .venv
+.venv-open3d/
 
 # Node / Next.js
 node_modules/
@@ -46,9 +47,15 @@ node_modules/
 *.task
 models/*.pth
 models/*.onnx
+models/experimentation/data/
+models/experimentation/runs/
+models/runtime/**/model.onnx
+!models/runtime/squat_form/v2/model.onnx
+!models/runtime/squat_form/v3/model.onnx
 
 # Test outputs
 .pytest_cache/
+.test-*/
 output/
 results/
 *.jpg
@@ -64,3 +71,6 @@ Thumbs.db
 .ipynb_checkpoints/
 *.ipynb
 nul
+
+# Local datasets
+assets/data/
