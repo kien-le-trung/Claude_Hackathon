@@ -4,7 +4,7 @@ SquatSpot is a local Next.js and FastAPI application that extracts pose landmark
 
 ## Requirements
 
-- Python 3.13
+- Python 3.12
 - Node.js 20+
 - Docker with Docker Compose (PostgreSQL only)
 
@@ -25,7 +25,7 @@ docker compose up -d postgres
 Create the API environment and start FastAPI:
 
 ```bash
-python -m venv venv
+py -3.12 -m venv venv
 # Windows: venv\Scripts\activate
 # macOS/Linux: source venv/bin/activate
 pip install -r apps/api/requirements.txt
@@ -53,8 +53,12 @@ npm run dev
 3. A valid upload receives `202 Accepted`; the frontend polls `GET /api/videos/{id}`.
 4. MediaPipe samples the video by timestamp at up to 10 FPS.
 5. A biomechanics-only SVM classifies sufficiently complete poses and consolidates stable adjacent errors.
-6. PostgreSQL stores compact frame evidence and event summaries; representative annotated frames are stored locally.
-7. The temporary uploaded video is deleted after success or failure.
+6. PostgreSQL stores compact frame evidence and event summaries; representative
+   frames, a normalized source MP4, and an unsmoothed skeleton MP4 are stored
+   locally with the analysis.
+7. The temporary upload is deleted after processing. A silent browser-ready MP4
+   and unsmoothed 3D skeleton reconstruction remain with the analysis until the
+   analysis is deleted.
 
 ## Squat-form classifier
 
@@ -68,8 +72,9 @@ existing `venv` interpreter. Train and promote the required v2 model with:
 ```
 
 The polling API exposes classification summaries and consolidated events.
-Compact frame predictions remain in PostgreSQL. Original uploads are deleted;
-representative annotated frames remain until the analysis is deleted.
+Compact frame predictions remain in PostgreSQL. A normalized source MP4,
+reconstruction MP4, and representative annotated frames remain until the
+analysis is deleted.
 
 ## Tests
 

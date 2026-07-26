@@ -3,9 +3,9 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from uuid import UUID, uuid4
 
-from fastapi import BackgroundTasks, Depends, FastAPI, File, HTTPException, UploadFile, status
+from fastapi import BackgroundTasks, Depends, FastAPI, File, HTTPException, Request, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from sqlalchemy.orm import Session
 
 from .analysis import LandmarkExtractionService
@@ -14,6 +14,11 @@ from .classification import SquatFormClassifier
 from .config import get_settings
 from .database import SessionLocal, Video, get_db
 from .events import public_event
+from .media import (
+    media_destination,
+    normalize_source_video,
+    render_reconstruction_video,
+)
 from .validation import VideoMetadata, VideoValidationError, VideoValidator
 
 settings = get_settings()
@@ -62,6 +67,19 @@ def serialize_video(video: Video) -> dict:
             public_event(event, str(video.id))
             for event in classification.get("events", [])
         ]
+    stored_media = video.extracted_json.get("media", {}) if video.extracted_json else {}
+    media = {
+        "source_video_url": (
+            f"{settings.api_prefix}/videos/{video.id}/media/source"
+            if stored_media.get("source_path") else None
+        ),
+        "reconstruction_video_url": (
+            f"{settings.api_prefix}/videos/{video.id}/media/reconstruction"
+            if stored_media.get("reconstruction_path") else None
+        ),
+        "reconstruction_fps": stored_media.get("reconstruction_fps"),
+        "warnings": stored_media.get("warnings", []),
+    }
     return {
         "id": str(video.id),
         "date_created": video.date_created,
@@ -71,6 +89,7 @@ def serialize_video(video: Video) -> dict:
         "extraction": extraction,
         "classification": classification,
         "progress": progress,
+        "media": media,
         "error_message": video.error_message,
     }
 
@@ -84,6 +103,7 @@ def process_video(video_id: UUID, temporary_path: Path, metadata: VideoMetadata)
         record.status = "processing"
         record.extracted_json = {
             "progress": {
+                "stage": "extracting",
                 "decoded_frame_count": 0,
                 "sampled_frame_count": 0,
                 "detected_frame_count": 0,
@@ -101,7 +121,12 @@ def process_video(video_id: UUID, temporary_path: Path, metadata: VideoMetadata)
             if now - last_progress_write < 1.0 and progress["percent"] < 100.0:
                 return
             record.extracted_json = {
-                "progress": {**progress, "classified_frame_count": 0}
+                "progress": {
+                    **progress,
+                    "stage": "extracting",
+                    "percent": round(progress["percent"] * 0.7, 1),
+                    "classified_frame_count": 0,
+                }
             }
             db.commit()
             last_progress_write = now
@@ -109,12 +134,66 @@ def process_video(video_id: UUID, temporary_path: Path, metadata: VideoMetadata)
         payload = extraction_service.extract(
             temporary_path, metadata, progress_callback=update_progress
         )
+        record.extracted_json = {
+            "progress": {
+                **record.extracted_json.get("progress", {}),
+                "stage": "classifying",
+                "percent": 72.0,
+            }
+        }
+        db.commit()
         classifier = get_classifier()
         payload["classification"] = classifier.classify(payload)
         events = payload["classification"]["events"]
         create_event_artifacts(
             temporary_path, events, settings.artifact_root, str(video_id)
         )
+
+        media = {
+            "source_path": None,
+            "reconstruction_path": None,
+            "reconstruction_fps": float(payload["sampling"]["effective_fps"]),
+            "warnings": [],
+        }
+        record.extracted_json = {
+            "progress": {
+                **record.extracted_json.get("progress", {}),
+                "stage": "preparing_video",
+                "percent": 80.0,
+            }
+        }
+        db.commit()
+        source_destination, source_relative = media_destination(
+            settings.artifact_root, str(video_id), "source.mp4"
+        )
+        try:
+            normalize_source_video(temporary_path, source_destination)
+            media["source_path"] = source_relative
+        except Exception as exc:
+            media["warnings"].append(f"Source video unavailable: {str(exc)[:240]}")
+
+        record.extracted_json = {
+            "progress": {
+                **record.extracted_json.get("progress", {}),
+                "stage": "rendering_reconstruction",
+                "percent": 88.0,
+            }
+        }
+        db.commit()
+        reconstruction_destination, reconstruction_relative = media_destination(
+            settings.artifact_root, str(video_id), "reconstruction.mp4"
+        )
+        try:
+            render_reconstruction_video(
+                payload["frames"],
+                reconstruction_destination,
+                media["reconstruction_fps"],
+            )
+            media["reconstruction_path"] = reconstruction_relative
+        except Exception as exc:
+            media["warnings"].append(
+                f"Skeleton reconstruction unavailable: {str(exc)[:240]}"
+            )
 
         prediction_by_frame = {
             item["frame_number"]: item
@@ -138,6 +217,7 @@ def process_video(video_id: UUID, temporary_path: Path, metadata: VideoMetadata)
         payload["classification"].pop("frames", None)
         payload["classification"].pop("events", None)
         payload["progress"] = {
+            "stage": "completed",
             "decoded_frame_count": payload["summary"]["decoded_frame_count"],
             "sampled_frame_count": payload["summary"]["sampled_frame_count"],
             "detected_frame_count": payload["summary"]["detected_frame_count"],
@@ -145,6 +225,7 @@ def process_video(video_id: UUID, temporary_path: Path, metadata: VideoMetadata)
             "total_frame_count": metadata.total_frames,
             "percent": 100.0,
         }
+        payload["media"] = media
         record.extracted_json = payload
         record.status = "completed"
         record.error_message = None
@@ -253,6 +334,92 @@ def get_event_frame(
     if not path.is_file():
         raise HTTPException(status_code=404, detail="Representative frame not found")
     return FileResponse(path, media_type="image/webp")
+
+
+def _media_response(video_id: UUID, kind: str, request: Request, db: Session):
+    record = db.get(Video, video_id)
+    if record is None or not record.extracted_json:
+        raise HTTPException(status_code=404, detail="Video analysis not found")
+    media = record.extracted_json.get("media", {})
+    key = "source_path" if kind == "source" else "reconstruction_path"
+    relative = media.get(key)
+    if not relative:
+        raise HTTPException(status_code=404, detail=f"{kind.title()} video unavailable")
+    path = artifact_path(settings.artifact_root, relative)
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail=f"{kind.title()} video unavailable")
+    common_headers = {
+        "Accept-Ranges": "bytes",
+        "Cache-Control": "private, no-store",
+        "Content-Disposition": f'inline; filename="{kind}.mp4"',
+    }
+    range_header = request.headers.get("range")
+    if range_header:
+        size = path.stat().st_size
+        try:
+            unit, requested = range_header.split("=", 1)
+            if unit.strip().lower() != "bytes" or "," in requested:
+                raise ValueError
+            start_text, end_text = requested.strip().split("-", 1)
+            if not start_text:
+                suffix_length = int(end_text)
+                if suffix_length <= 0:
+                    raise ValueError
+                start = max(size - suffix_length, 0)
+                end = size - 1
+            else:
+                start = int(start_text)
+                end = int(end_text) if end_text else size - 1
+            if start < 0 or start >= size or end < start:
+                raise ValueError
+            end = min(end, size - 1)
+        except (ValueError, TypeError):
+            return Response(
+                status_code=416,
+                headers={**common_headers, "Content-Range": f"bytes */{size}"},
+            )
+
+        length = end - start + 1
+
+        def stream_range():
+            remaining = length
+            with path.open("rb") as handle:
+                handle.seek(start)
+                while remaining:
+                    chunk = handle.read(min(1024 * 1024, remaining))
+                    if not chunk:
+                        break
+                    remaining -= len(chunk)
+                    yield chunk
+
+        return StreamingResponse(
+            stream_range(),
+            status_code=206,
+            media_type="video/mp4",
+            headers={
+                **common_headers,
+                "Content-Range": f"bytes {start}-{end}/{size}",
+                "Content-Length": str(length),
+            },
+        )
+    return FileResponse(
+        path,
+        media_type="video/mp4",
+        filename=None,
+        headers=common_headers,
+    )
+
+
+@app.get(f"{settings.api_prefix}/videos/{{video_id}}/media/source")
+def get_source_video(video_id: UUID, request: Request, db: Session = Depends(get_db)):
+    return _media_response(video_id, "source", request, db)
+
+
+@app.get(f"{settings.api_prefix}/videos/{{video_id}}/media/reconstruction")
+def get_reconstruction_video(
+    video_id: UUID, request: Request, db: Session = Depends(get_db)
+):
+    return _media_response(video_id, "reconstruction", request, db)
 
 
 @app.delete(f"{settings.api_prefix}/videos/{{video_id}}", status_code=204)

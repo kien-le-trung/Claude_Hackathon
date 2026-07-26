@@ -161,13 +161,30 @@ def test_background_processing_persists_payload_and_deletes_file(monkeypatch, tm
     monkeypatch.setattr(main.extraction_service, "extract", lambda *_, **__: payload)
     monkeypatch.setattr(main, "get_classifier", lambda: Classifier())
     monkeypatch.setattr(main, "create_event_artifacts", lambda *_: None)
+    monkeypatch.setattr(main.settings, "artifact_root", tmp_path / "artifacts")
+    monkeypatch.setattr(
+        main,
+        "normalize_source_video",
+        lambda _source, destination: destination.write_bytes(b"source"),
+    )
+    monkeypatch.setattr(
+        main,
+        "render_reconstruction_video",
+        lambda _frames, destination, _fps: destination.write_bytes(b"reconstruction"),
+    )
 
     main.process_video(uuid4(), video_path, metadata)
 
-    assert commits == ["processing", "completed"]
+    assert commits[0] == "processing"
+    assert commits[-1] == "completed"
     assert record.extracted_json["classification"]["summary"]["result"] == "good"
     assert record.extracted_json["evidence"]["frames"][0]["predicted_class"] == "good"
     assert "frames" not in record.extracted_json
+    assert record.extracted_json["media"]["source_path"].endswith("/source.mp4")
+    assert record.extracted_json["media"]["reconstruction_path"].endswith(
+        "/reconstruction.mp4"
+    )
+    assert record.extracted_json["media"]["warnings"] == []
     assert record.error_message is None
     assert not video_path.exists()
 
@@ -261,6 +278,12 @@ def test_event_frame_is_served_and_delete_removes_record_and_artifacts(
     stored = tmp_path / relative
     stored.parent.mkdir(parents=True)
     stored.write_bytes(b"webp")
+    source_relative = f"{video_id}/source.mp4"
+    reconstruction_relative = f"{video_id}/reconstruction.mp4"
+    source = tmp_path / source_relative
+    reconstruction = tmp_path / reconstruction_relative
+    source.write_bytes(b"source-video")
+    reconstruction.write_bytes(b"reconstruction-video")
     record = SimpleNamespace(
         id=video_id,
         date_created=datetime.now(timezone.utc),
@@ -278,6 +301,12 @@ def test_event_frame_is_served_and_delete_removes_record_and_artifacts(
                     }],
                 }
             },
+            "media": {
+                "source_path": source_relative,
+                "reconstruction_path": reconstruction_relative,
+                "reconstruction_fps": 10.0,
+                "warnings": [],
+            },
         },
         error_message=None,
     )
@@ -289,12 +318,59 @@ def test_event_frame_is_served_and_delete_removes_record_and_artifacts(
         frame_response = client.get(
             f"/api/videos/{video_id}/events/{event_id}/frame"
         )
+        source_response = client.get(f"/api/videos/{video_id}/media/source")
+        ranged_source_response = client.get(
+            f"/api/videos/{video_id}/media/source",
+            headers={"Range": "bytes=0-5"},
+        )
+        reconstruction_response = client.get(
+            f"/api/videos/{video_id}/media/reconstruction"
+        )
         delete_response = client.delete(f"/api/videos/{video_id}")
     finally:
         main.app.dependency_overrides.clear()
 
     assert frame_response.status_code == 200
     assert frame_response.content == b"webp"
+    assert source_response.status_code == 200
+    assert source_response.content == b"source-video"
+    assert source_response.headers["content-type"] == "video/mp4"
+    assert source_response.headers["cache-control"] == "private, no-store"
+    assert ranged_source_response.status_code == 206
+    assert ranged_source_response.content == b"source"
+    assert reconstruction_response.content == b"reconstruction-video"
     assert delete_response.status_code == 204
     assert database.records == []
     assert not stored.exists()
+    assert not source.exists()
+    assert not reconstruction.exists()
+
+
+def test_status_response_exposes_media_urls_and_warnings():
+    video_id = uuid4()
+    video = SimpleNamespace(
+        id=video_id,
+        date_created=datetime.now(timezone.utc),
+        status="completed",
+        original_filename="squat.avi",
+        content_type="video/x-msvideo",
+        extracted_json={
+            "summary": {},
+            "media": {
+                "source_path": f"{video_id}/source.mp4",
+                "reconstruction_path": None,
+                "reconstruction_fps": 10.0,
+                "warnings": ["Skeleton reconstruction unavailable"],
+            },
+        },
+        error_message=None,
+    )
+
+    payload = main.serialize_video(video)
+
+    assert payload["media"]["source_video_url"].endswith(
+        f"/videos/{video_id}/media/source"
+    )
+    assert payload["media"]["reconstruction_video_url"] is None
+    assert payload["media"]["reconstruction_fps"] == 10.0
+    assert payload["media"]["warnings"] == ["Skeleton reconstruction unavailable"]
