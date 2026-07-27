@@ -1,8 +1,14 @@
 "use client";
 
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
+
+const InteractiveReconstruction = dynamic(
+  () => import("./InteractiveReconstruction"),
+  { ssr: false },
+);
 
 type ErrorType = "bad_back" | "bad_heel";
 type ErrorEvent = {
@@ -36,7 +42,13 @@ type Analysis = {
   media?: {
     source_video_url: string | null;
     reconstruction_video_url: string | null;
+    skeleton_data_url: string | null;
     reconstruction_fps: number | null;
+    smoothing?: {
+      method: string;
+      window_length: number;
+      polynomial_order: number;
+    } | null;
     warnings: string[];
   };
 };
@@ -313,7 +325,9 @@ export default function AnalysisPage() {
               <article><span>Avg. confidence</span><strong>{averageConfidence === null ? "—" : `${(averageConfidence * 100).toFixed(0)}%`}</strong><small>Model certainty, not severity</small></article>
             </div>
 
-            {analysis.media && <SynchronizedVideos media={analysis.media} />}
+            {analysis.media && analysis.media.skeleton_data_url
+              ? <InteractiveReconstruction media={analysis.media} apiUrl={API_URL} />
+              : analysis.media && <SynchronizedVideos media={analysis.media} />}
 
             {groups.length ? (
               <section className="feedback-section">

@@ -17,7 +17,7 @@ from .events import public_event
 from .media import (
     media_destination,
     normalize_source_video,
-    render_reconstruction_video,
+    write_skeleton_artifact,
 )
 from .validation import VideoMetadata, VideoValidationError, VideoValidator
 
@@ -78,6 +78,11 @@ def serialize_video(video: Video) -> dict:
             if stored_media.get("reconstruction_path") else None
         ),
         "reconstruction_fps": stored_media.get("reconstruction_fps"),
+        "skeleton_data_url": (
+            f"{settings.api_prefix}/videos/{video.id}/media/skeleton"
+            if stored_media.get("skeleton_path") else None
+        ),
+        "smoothing": stored_media.get("smoothing"),
         "warnings": stored_media.get("warnings", []),
     }
     return {
@@ -152,7 +157,13 @@ def process_video(video_id: UUID, temporary_path: Path, metadata: VideoMetadata)
         media = {
             "source_path": None,
             "reconstruction_path": None,
+            "skeleton_path": None,
             "reconstruction_fps": float(payload["sampling"]["effective_fps"]),
+            "smoothing": {
+                "method": "savitzky_golay",
+                "window_length": 7,
+                "polynomial_order": 2,
+            },
             "warnings": [],
         }
         record.extracted_json = {
@@ -180,16 +191,16 @@ def process_video(video_id: UUID, temporary_path: Path, metadata: VideoMetadata)
             }
         }
         db.commit()
-        reconstruction_destination, reconstruction_relative = media_destination(
-            settings.artifact_root, str(video_id), "reconstruction.mp4"
+        skeleton_destination, skeleton_relative = media_destination(
+            settings.artifact_root, str(video_id), "skeleton.json"
         )
         try:
-            render_reconstruction_video(
+            write_skeleton_artifact(
                 payload["frames"],
-                reconstruction_destination,
+                skeleton_destination,
                 media["reconstruction_fps"],
             )
-            media["reconstruction_path"] = reconstruction_relative
+            media["skeleton_path"] = skeleton_relative
         except Exception as exc:
             media["warnings"].append(
                 f"Skeleton reconstruction unavailable: {str(exc)[:240]}"
@@ -420,6 +431,25 @@ def get_reconstruction_video(
     video_id: UUID, request: Request, db: Session = Depends(get_db)
 ):
     return _media_response(video_id, "reconstruction", request, db)
+
+
+@app.get(f"{settings.api_prefix}/videos/{{video_id}}/media/skeleton")
+def get_skeleton_data(video_id: UUID, db: Session = Depends(get_db)):
+    record = db.get(Video, video_id)
+    if record is None or not record.extracted_json:
+        raise HTTPException(status_code=404, detail="Video analysis not found")
+    relative = record.extracted_json.get("media", {}).get("skeleton_path")
+    if not relative:
+        raise HTTPException(status_code=404, detail="Skeleton data unavailable")
+    path = artifact_path(settings.artifact_root, relative)
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Skeleton data unavailable")
+    return FileResponse(
+        path,
+        media_type="application/json",
+        filename=None,
+        headers={"Cache-Control": "private, no-store"},
+    )
 
 
 @app.delete(f"{settings.api_prefix}/videos/{{video_id}}", status_code=204)

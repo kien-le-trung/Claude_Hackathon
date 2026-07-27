@@ -54,11 +54,11 @@ npm run dev
 4. MediaPipe samples the video by timestamp at up to 10 FPS.
 5. A biomechanics-only SVM classifies sufficiently complete poses and consolidates stable adjacent errors.
 6. PostgreSQL stores compact frame evidence and event summaries; representative
-   frames, a normalized source MP4, and an unsmoothed skeleton MP4 are stored
-   locally with the analysis.
+   frames, a normalized source MP4, and a smoothed, timestamped 3D skeleton
+   artifact are stored locally with the analysis.
 7. The temporary upload is deleted after processing. A silent browser-ready MP4
-   and unsmoothed 3D skeleton reconstruction remain with the analysis until the
-   analysis is deleted.
+   and interactive 3D skeleton reconstruction remain with the analysis until
+   the analysis is deleted.
 
 ## Squat-form classifier
 
@@ -73,8 +73,8 @@ existing `venv` interpreter. Train and promote the required v2 model with:
 
 The polling API exposes classification summaries and consolidated events.
 Compact frame predictions remain in PostgreSQL. A normalized source MP4,
-reconstruction MP4, and representative annotated frames remain until the
-analysis is deleted.
+interactive skeleton artifact, and representative annotated frames remain
+until the analysis is deleted.
 
 ## Tests
 

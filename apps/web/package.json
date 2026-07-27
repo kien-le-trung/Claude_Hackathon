@@ -8,13 +8,17 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "@react-three/drei": "^9.120.4",
+    "@react-three/fiber": "^8.17.10",
     "next": "14.2.15",
     "react": "18.3.1",
-    "react-dom": "18.3.1"
+    "react-dom": "18.3.1",
+    "three": "^0.171.0"
   },
   "devDependencies": {
     "@types/node": "22.7.4",
     "@types/react": "18.3.10",
+    "@types/three": "^0.171.0",
     "typescript": "5.6.2"
   }
 }

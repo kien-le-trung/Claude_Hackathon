@@ -3,9 +3,10 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-import open3d as o3d
+from scipy.signal import savgol_filter
 
 from config import OUTPUT_DIR
+from evaluate import evaluate_reconstruction_sequence
 from extract_mediapipe import load_extracted_landmarks
 
 LEFT_ANKLE = 27
@@ -58,6 +59,10 @@ BONE_PAIRS = [
     (28, 32),
 ]
 
+# Savitzky-Golay smoothing
+SMOOTHING_WINDOW = 7
+SMOOTHING_POLY_ORDER = 2
+
 
 def landmarks_to_array(record: dict) -> np.ndarray:
     return np.asarray(
@@ -72,42 +77,54 @@ def landmarks_to_array(record: dict) -> np.ndarray:
         dtype=np.float64,
     )
 
+
+def smooth_join_sequence(
+        joints: np.ndarray,
+        window_length: int = SMOOTHING_WINDOW,
+        polynomial_order: int = SMOOTHING_POLY_ORDER
+) -> np.ndarray:
+    joints = np.asarray(joints, dtype=np.float64)
+    if not np.isfinite(joints).all():
+        raise ValueError("Cannot smooth non-finite joint coordinates")
+    frame_count = joints.shape[0]
+    window_length = min(window_length, frame_count)
+    if window_length % 2 == 0:
+        window_length -= 1 # enforce odd window
+    if window_length <= polynomial_order:
+        return joints.copy() # enforce poly order < array length
+    return savgol_filter(joints, window_length, polynomial_order, axis=0)
+
+
 # Map MediaPipe coordinates to display coordinates (X, Y, Z) -> (X, Z, -Y)
 def convert_axes(points: np.ndarray) -> np.ndarray:
     converted = points[:, [0, 2, 1]].copy()
     converted[:, 2] *= -1.0
     return converted
 
-
+# If the frames are not next to one another, split them into groups of frames
 def split_contiguous_sequences(records: list[dict]) -> list[list[dict]]:
     if not records:
         return []
-
     sequences = [[records[0]]]
-
     for previous, current in zip(records, records[1:]):
         if current["frame_id"] != previous["frame_id"] + 1:
             sequences.append([])
         sequences[-1].append(current)
-
     return sequences
 
 
 def create_joint_cloud(points):
-    cloud = o3d.geometry.PointCloud()
+    import open3d as o3d
 
-    cloud.points = o3d.utility.Vector3dVector(
-        points
-    )
-    cloud.paint_uniform_color([
-        0.49,
-        0.23,
-        0.93,
-    ])
+    cloud = o3d.geometry.PointCloud()
+    cloud.points = o3d.utility.Vector3dVector(points)
+    cloud.paint_uniform_color([0.49, 0.23, 0.93])
     return cloud
 
 
 def create_bone_lines(points, bone_pairs):
+    import open3d as o3d
+
     skeleton = o3d.geometry.LineSet()
     skeleton.points = o3d.utility.Vector3dVector(points)
     skeleton.lines = o3d.utility.Vector2iVector(bone_pairs)
@@ -115,14 +132,64 @@ def create_bone_lines(points, bone_pairs):
     return skeleton
 
 
+def evaluate() -> dict:
+    """Evaluate raw versus S-G-smoothed sequences and save the scorecards."""
+    fps = 30.0
+    records = [
+        record for record in load_extracted_landmarks()
+        if record.get("detected") and record.get("world_landmarks")
+    ]
+    sequences = split_contiguous_sequences(records)
+    if not sequences:
+        raise ValueError("No detected MediaPipe skeletons are available to evaluate")
+
+    results = []
+    for sequence_index, sequence in enumerate(sequences, start=1):
+        frame_ids = np.asarray(
+            [int(record["frame_id"]) for record in sequence],
+            dtype=np.int64,
+        )
+        raw_joints = np.stack(
+            [landmarks_to_array(record) for record in sequence],
+            axis=0,
+        )
+        smoothed_joints = smooth_join_sequence(raw_joints)
+        scorecard = evaluate_reconstruction_sequence(
+            frame_ids,
+            raw_joints,
+            smoothed_joints,
+            fps=fps,
+        )
+        scorecard["sequence_index"] = sequence_index
+        results.append(scorecard)
+
+    report = {
+        "smoothing": {
+            "method": "savitzky_golay",
+            "window_length": SMOOTHING_WINDOW,
+            "polynomial_order": SMOOTHING_POLY_ORDER,
+        },
+        "sequences": results,
+    }
+    output_path = OUTPUT_DIR / (
+        f"w00_smoothing_metrics_sg_w{SMOOTHING_WINDOW}"
+        f"_p{SMOOTHING_POLY_ORDER}.json"
+    )
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    print(f"Wrote {output_path}")
+    return report
+
+
 def reconstruct_video() -> None:
+    import open3d as o3d
+
     width = 960
     height = 720
     fps = 30.0
 
     records = [
-        record
-        for record in load_extracted_landmarks()
+        record for record in load_extracted_landmarks()
         if record.get("detected") and record.get("world_landmarks")
     ]
     sequences = split_contiguous_sequences(records)
@@ -132,20 +199,23 @@ def reconstruct_video() -> None:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     for sequence_index, sequence in enumerate(sequences, start=1):
-        frames = []
-        for record in sequence:
-            joints = convert_axes(landmarks_to_array(record))
+        frame_ids = np.asarray([int(record["frame_id"]) for record in sequence], dtype=np.int64)
+        raw_joints = np.stack([landmarks_to_array(record) for record in sequence], axis=0)
+        smooth_joints = smooth_join_sequence(raw_joints)
 
-            # MediaPipe world coordinates are hip-centered. Reposition each
-            # frame so the lowest foot landmark sits on a common floor while
-            # retaining the visible vertical motion of the pelvis.
-            pelvis = (joints[LEFT_HIP] + joints[RIGHT_HIP]) / 2.0
+        frames = []
+        for frame_id, world_joints in zip(frame_ids, smooth_joints):
+            joints = convert_axes(world_joints)
+
+            pelvis = (joints[LEFT_HIP] + joints[RIGHT_HIP])/2
             foot_center = joints[FOOT_INDICES].mean(axis=0)
             floor_height = joints[FOOT_INDICES, 2].min()
+
             joints[:, 0] -= pelvis[0]
             joints[:, 1] -= foot_center[1]
-            joints[:, 2] -= floor_height
-            frames.append((int(record["frame_id"]), joints))
+            joints[:, 2] -= floor_height # make sure skeleton always on the floor
+
+            frames.append((int(frame_id), joints))
 
         first_frame_id, first_joints = frames[0]
         joint_cloud = create_joint_cloud(first_joints)
@@ -185,7 +255,7 @@ def reconstruct_video() -> None:
         view.set_up([0.0, 0.0, 1.0])
         view.set_zoom(0.65)
 
-        output_path = OUTPUT_DIR / f"w00_squat_{sequence_index}.mp4"
+        output_path = OUTPUT_DIR / f"w00_squat_{sequence_index}_smoothed.mp4"
         writer = None
         encoded_size = None
 

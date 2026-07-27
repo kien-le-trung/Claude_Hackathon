@@ -169,8 +169,8 @@ def test_background_processing_persists_payload_and_deletes_file(monkeypatch, tm
     )
     monkeypatch.setattr(
         main,
-        "render_reconstruction_video",
-        lambda _frames, destination, _fps: destination.write_bytes(b"reconstruction"),
+        "write_skeleton_artifact",
+        lambda _frames, destination, _fps: destination.write_text("{}", encoding="utf-8"),
     )
 
     main.process_video(uuid4(), video_path, metadata)
@@ -181,8 +181,9 @@ def test_background_processing_persists_payload_and_deletes_file(monkeypatch, tm
     assert record.extracted_json["evidence"]["frames"][0]["predicted_class"] == "good"
     assert "frames" not in record.extracted_json
     assert record.extracted_json["media"]["source_path"].endswith("/source.mp4")
-    assert record.extracted_json["media"]["reconstruction_path"].endswith(
-        "/reconstruction.mp4"
+    assert record.extracted_json["media"]["reconstruction_path"] is None
+    assert record.extracted_json["media"]["skeleton_path"].endswith(
+        "/skeleton.json"
     )
     assert record.extracted_json["media"]["warnings"] == []
     assert record.error_message is None
@@ -282,8 +283,11 @@ def test_event_frame_is_served_and_delete_removes_record_and_artifacts(
     reconstruction_relative = f"{video_id}/reconstruction.mp4"
     source = tmp_path / source_relative
     reconstruction = tmp_path / reconstruction_relative
+    skeleton_relative = f"{video_id}/skeleton.json"
+    skeleton = tmp_path / skeleton_relative
     source.write_bytes(b"source-video")
     reconstruction.write_bytes(b"reconstruction-video")
+    skeleton.write_text('{"schema_version":1}', encoding="utf-8")
     record = SimpleNamespace(
         id=video_id,
         date_created=datetime.now(timezone.utc),
@@ -304,6 +308,7 @@ def test_event_frame_is_served_and_delete_removes_record_and_artifacts(
             "media": {
                 "source_path": source_relative,
                 "reconstruction_path": reconstruction_relative,
+                "skeleton_path": skeleton_relative,
                 "reconstruction_fps": 10.0,
                 "warnings": [],
             },
@@ -326,6 +331,9 @@ def test_event_frame_is_served_and_delete_removes_record_and_artifacts(
         reconstruction_response = client.get(
             f"/api/videos/{video_id}/media/reconstruction"
         )
+        skeleton_response = client.get(
+            f"/api/videos/{video_id}/media/skeleton"
+        )
         delete_response = client.delete(f"/api/videos/{video_id}")
     finally:
         main.app.dependency_overrides.clear()
@@ -339,11 +347,16 @@ def test_event_frame_is_served_and_delete_removes_record_and_artifacts(
     assert ranged_source_response.status_code == 206
     assert ranged_source_response.content == b"source"
     assert reconstruction_response.content == b"reconstruction-video"
+    assert skeleton_response.status_code == 200
+    assert skeleton_response.json() == {"schema_version": 1}
+    assert skeleton_response.headers["content-type"].startswith("application/json")
+    assert skeleton_response.headers["cache-control"] == "private, no-store"
     assert delete_response.status_code == 204
     assert database.records == []
     assert not stored.exists()
     assert not source.exists()
     assert not reconstruction.exists()
+    assert not skeleton.exists()
 
 
 def test_status_response_exposes_media_urls_and_warnings():
@@ -359,7 +372,13 @@ def test_status_response_exposes_media_urls_and_warnings():
             "media": {
                 "source_path": f"{video_id}/source.mp4",
                 "reconstruction_path": None,
+                "skeleton_path": f"{video_id}/skeleton.json",
                 "reconstruction_fps": 10.0,
+                "smoothing": {
+                    "method": "savitzky_golay",
+                    "window_length": 7,
+                    "polynomial_order": 2,
+                },
                 "warnings": ["Skeleton reconstruction unavailable"],
             },
         },
@@ -372,5 +391,9 @@ def test_status_response_exposes_media_urls_and_warnings():
         f"/videos/{video_id}/media/source"
     )
     assert payload["media"]["reconstruction_video_url"] is None
+    assert payload["media"]["skeleton_data_url"].endswith(
+        f"/videos/{video_id}/media/skeleton"
+    )
+    assert payload["media"]["smoothing"]["window_length"] == 7
     assert payload["media"]["reconstruction_fps"] == 10.0
     assert payload["media"]["warnings"] == ["Skeleton reconstruction unavailable"]

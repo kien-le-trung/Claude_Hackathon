@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 from typing import Callable, Iterable
 
 import numpy as np
+from scipy.signal import savgol_filter
 
 from .artifacts import _safe_child
 
@@ -19,6 +21,9 @@ LEFT_HIP, RIGHT_HIP = 23, 24
 FOOT_INDICES = (27, 28, 29, 30, 31, 32)
 RENDER_WIDTH = 960
 RENDER_HEIGHT = 720
+SKELETON_SCHEMA_VERSION = 1
+SMOOTHING_WINDOW = 7
+SMOOTHING_POLY_ORDER = 2
 
 
 def media_destination(artifact_root: Path, video_id: str, name: str) -> tuple[Path, str]:
@@ -28,8 +33,8 @@ def media_destination(artifact_root: Path, video_id: str, name: str) -> tuple[Pa
     return destination, relative.as_posix()
 
 
-def normalized_skeleton_points(pose: dict) -> np.ndarray:
-    """Convert MediaPipe world coordinates to a stable floor-anchored display pose."""
+def world_skeleton_points(pose: dict) -> np.ndarray:
+    """Read one complete MediaPipe world-coordinate skeleton."""
     landmarks = pose.get("world_landmarks") or []
     if len(landmarks) != 33:
         raise ValueError(f"Expected 33 world landmarks, received {len(landmarks)}")
@@ -40,6 +45,16 @@ def normalized_skeleton_points(pose: dict) -> np.ndarray:
     if not np.isfinite(source).all():
         raise ValueError("World landmarks contain non-finite coordinates")
 
+    return source
+
+
+def normalized_skeleton_array(source: np.ndarray) -> np.ndarray:
+    """Convert world coordinates to a stable floor-anchored display pose."""
+    source = np.asarray(source, dtype=np.float64)
+    if source.shape != (33, 3):
+        raise ValueError(f"Expected skeleton shape (33, 3), received {source.shape}")
+    if not np.isfinite(source).all():
+        raise ValueError("World landmarks contain non-finite coordinates")
     points = source[:, [0, 2, 1]].copy()
     points[:, 2] *= -1.0
     pelvis = (points[LEFT_HIP] + points[RIGHT_HIP]) / 2.0
@@ -51,19 +66,115 @@ def normalized_skeleton_points(pose: dict) -> np.ndarray:
     return points
 
 
+def normalized_skeleton_points(pose: dict) -> np.ndarray:
+    """Compatibility helper for normalizing an individual pose."""
+    return normalized_skeleton_array(world_skeleton_points(pose))
+
+
+def smooth_joint_sequence(
+    joints: np.ndarray,
+    window_length: int = SMOOTHING_WINDOW,
+    polynomial_order: int = SMOOTHING_POLY_ORDER,
+) -> np.ndarray:
+    """Apply Savitzky-Golay smoothing along a contiguous frame axis."""
+    joints = np.asarray(joints, dtype=np.float64)
+    if joints.ndim != 3 or joints.shape[1:] != (33, 3):
+        raise ValueError(
+            f"Expected joints shaped (frames, 33, 3), received {joints.shape}"
+        )
+    if not np.isfinite(joints).all():
+        raise ValueError("Cannot smooth non-finite joint coordinates")
+    effective_window = min(window_length, len(joints))
+    if effective_window % 2 == 0:
+        effective_window -= 1
+    if effective_window <= polynomial_order:
+        return joints.copy()
+    return savgol_filter(
+        joints,
+        window_length=effective_window,
+        polyorder=polynomial_order,
+        axis=0,
+        mode="interp",
+    )
+
+
 def reconstruction_frames(extraction_frames: Iterable[dict]) -> list[np.ndarray | None]:
-    """Preserve the sampling timeline; missing poses become blank rendered frames."""
-    output: list[np.ndarray | None] = []
-    for frame in extraction_frames:
+    """Smooth contiguous poses and preserve missing samples as blank frames."""
+    frames = list(extraction_frames)
+    world_frames: list[np.ndarray | None] = []
+    for frame in frames:
         poses = frame.get("poses") or []
         if not poses:
-            output.append(None)
+            world_frames.append(None)
             continue
         try:
-            output.append(normalized_skeleton_points(poses[0]))
+            world_frames.append(world_skeleton_points(poses[0]))
         except ValueError:
-            output.append(None)
-    return output
+            world_frames.append(None)
+
+    smoothed: list[np.ndarray | None] = [None] * len(world_frames)
+    index = 0
+    while index < len(world_frames):
+        if world_frames[index] is None:
+            index += 1
+            continue
+        end = index
+        while end < len(world_frames) and world_frames[end] is not None:
+            end += 1
+        run = np.stack(world_frames[index:end])
+        filtered = smooth_joint_sequence(run)
+        for offset, points in enumerate(filtered):
+            smoothed[index + offset] = normalized_skeleton_array(points)
+        index = end
+    return smoothed
+
+
+def skeleton_artifact(
+    extraction_frames: Iterable[dict],
+    fps: float,
+) -> dict:
+    """Create the compact browser reconstruction payload."""
+    if fps <= 0:
+        raise ValueError("Reconstruction FPS must be positive")
+    source_frames = list(extraction_frames)
+    points = reconstruction_frames(source_frames)
+    return {
+        "schema_version": SKELETON_SCHEMA_VERSION,
+        "fps": float(fps),
+        "smoothing": {
+            "method": "savitzky_golay",
+            "window_length": SMOOTHING_WINDOW,
+            "polynomial_order": SMOOTHING_POLY_ORDER,
+        },
+        "connections": [list(pair) for pair in POSE_CONNECTIONS],
+        "frames": [
+            {
+                "timestamp_ms": int(frame["timestamp_ms"]),
+                "points": (
+                    np.round(frame_points, 6).tolist()
+                    if frame_points is not None
+                    else None
+                ),
+            }
+            for frame, frame_points in zip(source_frames, points)
+        ],
+    }
+
+
+def write_skeleton_artifact(
+    extraction_frames: Iterable[dict],
+    destination: Path,
+    fps: float,
+) -> int:
+    """Atomically write smoothed skeleton data and return its frame count."""
+    artifact = skeleton_artifact(extraction_frames, fps)
+    temporary = destination.with_name(f"{destination.name}.tmp")
+    temporary.write_text(
+        json.dumps(artifact, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    temporary.replace(destination)
+    return len(artifact["frames"])
 
 
 def normalize_source_video(source: Path, destination: Path) -> None:
