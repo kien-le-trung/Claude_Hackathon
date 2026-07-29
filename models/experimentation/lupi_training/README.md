@@ -59,8 +59,6 @@ single view. The deployed system should therefore return qualified feedback or
 Train a compact teacher on complete 3D pose sequences. Candidate implementations:
 
 - Engineered biomechanical features with gradient-boosted trees.
-- A small temporal CNN.
-- A small temporal GCN.
 
 An ensemble can provide more stable soft targets and an estimate of teacher
 uncertainty. The teacher is never required at deployment.
@@ -193,6 +191,124 @@ single-camera pose estimator.
 8. Validate on unseen subjects processed through the product landmark pipeline.
 
 Each stage should be retained only if it improves subject-held-out results.
+
+## Runnable Learning Environment
+
+This directory now contains a deliberately small, classical-ML implementation of
+the first two experiment-ladder stages. It uses EC3D's 3D ground-truth skeleton as
+privileged teacher input and one camera's 2D OpenPose skeleton as student input.
+Both teacher and student are linear SVMs, matching the deployed model family.
+
+EC3D contains exercise labels (`SQUAT`, `Lunges`, `Plank`, and `Pick-up`), but it
+does **not** contain the squat-fault annotations described in the architecture
+above. The runnable lesson therefore predicts exercise class. This is a sound way
+to learn the mechanics of distillation; do not interpret its result as a squat-form
+model. To train form faults later, replace the manifest's `action`/`label` fields
+with repetition-level expert annotations while retaining the subject split.
+
+### What each tensor means
+
+| Tensor | Shape | Available at deployment? |
+|---|---:|---:|
+| Teacher input | 200 features: per-joint mean/std of `x,y,z,valid` | No |
+| Student input | 150 features: per-joint mean/std of `x,y,valid` | Yes |
+| Hard target | one exercise class | Training only |
+| Teacher logits | one soft score per class | Training only |
+
+Both models use `StandardScaler → linear SVC(probability=True)`. An SVM cannot
+directly minimize cross-entropy against a probability-vector target, so distillation
+uses weighted pseudo-label expansion. For every student example, the training set
+contains:
+
+```text
+(1 - alpha) weight on its hard-label copy
++ alpha * teacher_probability[class] on one copy for each class
+```
+
+The copies together have total weight one. Change `alpha` to control how strongly
+the student follows the teacher; set it to zero for an ordinary hard-label SVM.
+
+### Setup (PowerShell)
+
+Run from this directory:
+
+```powershell
+.\setup.ps1
+C:\tmp\squatspot-lupi-py313\Scripts\Activate.ps1
+python run.py inspect
+```
+
+`setup.ps1` creates an isolated Python 3.13 environment at
+`C:\tmp\squatspot-lupi-py313` and installs scikit-learn, ONNX conversion, and ONNX
+Runtime. Set `LUPI_VENV` before setup to override the environment location.
+
+### Complete workflow
+
+```powershell
+# 1. Read and validate the trusted local pickle, then summarize it.
+python run.py inspect
+
+# 2. Clean, normalize, resample, split, and write one NPZ per repetition/view.
+python run.py preprocess
+
+# 3. Learn from privileged 3D sequences.
+python run.py train-teacher
+
+# 4. Train the 2D student with hard labels plus teacher soft targets.
+python run.py distill
+
+# 5. Evaluate only once on the held-out test subject.
+python run.py evaluate
+
+# Or execute stages 2-5 in order.
+python run.py run-all
+```
+
+The first pickle read can take roughly a minute. Preprocessing writes:
+
+```text
+data/processed/
+  classes.json
+  manifest.csv       # provenance, split, quality, camera, subject, repetition
+  samples/*.npz      # paired privileged 3D and deployable 2D tensors
+artifacts/
+  teacher.joblib
+  teacher.onnx
+  teacher_metadata.json
+  student.joblib
+  student.onnx
+  student_metadata.json
+  test_metrics.json
+```
+
+The default split is two training subjects, one validation subject, and one test
+subject. A complete repetition stays in exactly one split. Every camera view for
+that repetition inherits the same split, preventing subject and repetition leakage.
+Change the explicit subject lists in `config.yaml` to run other folds.
+
+### Preprocessing decisions
+
+- Frames are sorted by frame ID and resampled to 64 time steps.
+- Invalid/non-finite joints become zero and receive a zero validity channel.
+- Coordinates are robustly centered and scaled per repetition.
+- Samples below the configured 2D or 3D valid-joint fraction are rejected.
+- Original frame count and post-cleaning valid fractions remain in the manifest.
+- Raw EC3D is read-only; generated data goes under this experiment directory.
+
+Run the fast preprocessing unit tests with:
+
+```powershell
+python -m pytest -q
+```
+
+### Suggested learning experiments
+
+1. Set `alpha: 0.0` for the non-distilled student baseline.
+2. Restore `alpha: 0.5`, compare test macro F1 and balanced accuracy.
+3. Try different linear-SVM `C` values using validation subjects only.
+4. Rotate the four subject assignments and aggregate the four held-out results.
+5. Add per-camera metrics; then train separate front/side SVM students.
+6. Add 3D-derived biomechanical features to the teacher feature vector.
 
 ## Evaluation
 

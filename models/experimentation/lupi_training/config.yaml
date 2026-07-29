@@ -1,0 +1,17 @@
+seed: 42
+data:
+  raw_pickle: ../../../assets/data/ec3d/data.pickle
+  processed_dir: data/processed
+  sequence_length: 64
+  min_valid_fraction: 0.50
+  # With only four people, this is intentionally explicit and auditable.
+  train_subjects: [Hugues, Sena]
+  val_subjects: [Vidit]
+  test_subjects: [Isinsu]
+  # Quote IDs: YAML otherwise interprets underscores inside numerals.
+  cameras: ["6_1", "6_2", "6_3", "6_4"]
+training:
+  model: linear_svm
+distillation:
+  alpha: 0.50
+output_dir: artifacts
